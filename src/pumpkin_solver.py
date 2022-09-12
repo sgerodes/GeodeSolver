@@ -1,7 +1,4 @@
-import z3
-from z3 import Int, Solver, IntVector, And, If, Implies, Sum, ForAll, Exists, Or, simplify
-
-from src.model_sorter import sort_model
+from z3 import Int, Solver, IntVector, And, If, Implies, Sum, ForAll, Or
 
 
 def flatten(grid: list[IntVector]):
@@ -92,12 +89,10 @@ def parse_input(input_: str):
     # We need to ensure that all blocks within a group can reach all other groups
     # To achieve this, we state that one of the blocks in a group can be the 'source' block, with a distance of 0
     # to itself.
-    # All other blocks in the group have to have a neigbhour from the same group with a lower distance value
+    # All other blocks in the group have to have a neighbour from the same group with a lower distance value
     # than the block has itself.
     # This way, recursively, everything has a path to lead back to the source block, and it is asserted that
     # all blocks within a group connect to each other
-
-    # TODO: Properly implement this
 
     # Initialize the distance grid
     group_source_distance_grid = [IntVector(f'group_source_distance__{row}', width) for row in range(height)]
