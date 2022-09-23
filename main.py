@@ -1,6 +1,11 @@
 import time
 
-from src.pumpkin_solver import parse_input
+from src.Enums.geode_enum import GeodeEnum
+from src.grid_reader import geode_generator
+import colorama
+colorama.init()
+
+from src.sat_pumpkin_solver import parse_input
 
 # Contains 93 pumpkins
 # This is the main direction in Ilmango's tutorial video
@@ -24,6 +29,17 @@ input_grid = '''00000000000000000
 00000000pp0000000
 00000000000000000'''
 
-start = time.time()
-parse_input(input_grid)
-print(f'Took {time.time() - start} seconds')
+# start = time.time()
+# parse_input(input_grid)
+# print(f'Took {time.time() - start} seconds')
+
+
+gen = geode_generator()
+while True:
+    geode = next(gen)
+    # geode.pretty_print_projection()
+    # geode.pretty_print_group_grid()
+    geode.pretty_print_merged()
+    geode.populate_bridges()
+    geode.pretty_print_merged()
+    exit()
