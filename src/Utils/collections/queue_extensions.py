@@ -1,4 +1,5 @@
 import heapq
+from typing import Callable, Any
 
 
 class PrioritySet:
@@ -15,3 +16,14 @@ class PrioritySet:
         pri, d = heapq.heappop(self.heap)
         self.set.remove(d)
         return d
+
+    def recompute_all(self, key: Callable[[Any], Any]):
+        old_set = self.set
+        self.heap = []
+        self.set = set()
+
+        for item in old_set:
+            self.add(item, key(item))
+
+    def __len__(self) -> int:
+        return len(self.heap)

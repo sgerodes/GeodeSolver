@@ -160,16 +160,15 @@ class Geode:
                         while cell.projected_block == GeodeEnum.BRIDGE:
                             visited_blocks.add(cell)
                             cell = q.get()
-
-                    # If we encounter a bridge that can't connect to anything meaningful, we skip it
-                    if (cell.projected_block == GeodeEnum.BRIDGE
-                        and not any((True for neighbour in cell.neighbours(self.grid)
-                                     if neighbour.projected_block == GeodeEnum.PUMPKIN and not neighbour.has_group))):
-                        visited_blocks.add(cell)
-                        continue
-
                 except IndexError:
                     break
+
+                # If we encounter a bridge that can't connect to anything meaningful, we skip it
+                if (cell.projected_block == GeodeEnum.BRIDGE
+                    and not any((True for neighbour in cell.neighbours(self.grid)
+                                 if neighbour.projected_block == GeodeEnum.PUMPKIN and not neighbour.has_group))):
+                    visited_blocks.add(cell)
+                    continue
 
                 isolation_count = self.nr_of_isolated_blocks()
                 cell.group_nr = group_nr
@@ -184,16 +183,16 @@ class Geode:
                     self.groups[group_nr].cells.remove(cell)
                     continue
 
+                # At this point, we commit to placing the block.
+                # We recompute the priority for everything in the queue since the priority changed after
+                # adding a block and recomputing the isolation factor
+                q.recompute_all(lambda x: Cell.priority(x, self.grid))
+
                 for neighbour in (neighbour for neighbour in cell.neighbours(self.grid)
                                   if neighbour.projected_block in [GeodeEnum.PUMPKIN, GeodeEnum.BRIDGE]
                                   and not neighbour.has_group
                                   and neighbour not in visited_blocks):
-                    priority = -neighbour.average_block_distance if neighbour.projected_block == GeodeEnum.PUMPKIN \
-                               else -max((neighbour2.average_block_distance
-                                          for neighbour2 in neighbour.neighbours(self.grid)
-                                          if neighbour2.projected_block == GeodeEnum.PUMPKIN),
-                                         default=neighbour.average_block_distance)
-                    q.add(neighbour, (priority, neighbour))
+                    q.add(neighbour, neighbour.priority(self.grid))
 
     def cells(self) -> Iterator[Cell]:
         return (self.grid[row][col]

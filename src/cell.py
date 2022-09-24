@@ -51,14 +51,26 @@ class Cell:
         if self.projected_block in [GeodeEnum.AIR]:
             return '   '
         color = colorama.Back.BLACK \
-                if self.average_block_distance == float('inf') \
-                else colors[int(self.average_block_distance) % len(colors)]
+            if self.average_block_distance == float('inf') \
+            else colors[int(self.average_block_distance) % len(colors)]
         val = float('inf') if self.average_block_distance == float('inf') else int(self.average_block_distance)
         return f'{color}{val:03}{colorama.Back.RESET}'
 
     @property
     def has_group(self):
         return self.group_nr != -1
+
+    def priority(self, grid: list[list[Cell]]) -> tuple[Union[int, float], Cell]:
+        # The priority is a tuple with cell such that given the same score, pumpkins can be given priority over
+        # bridges and air
+        if self.projected_block == GeodeEnum.PUMPKIN:
+            return -self.average_block_distance, self
+
+        # Otherwise, return the maximum isolation score of all the neighbours
+        return -max((neighbour.average_block_distance
+                     for neighbour in self.neighbours(grid)
+                     if neighbour.projected_block == GeodeEnum.PUMPKIN),
+                    default=self.average_block_distance), self
 
     def __lt__(self, other):
         # If something is a pumpkin, we say it is smaller to give it priority over other types.
@@ -68,4 +80,3 @@ class Cell:
             return False
         # In other situations we don't care
         return True
-
