@@ -1,11 +1,9 @@
 import statistics
 from collections import defaultdict
-from queue import Empty
-from typing import Callable
+from typing import Callable, Iterator
 
 from src.Enums.geode_enum import GeodeEnum
 from src.Utils.collections.queue_extensions import PrioritySet
-from src.Utils.grid_utils import GridUtils
 from src.cell import Cell
 from src.group import Group
 
@@ -25,7 +23,7 @@ class Geode:
         self.pretty_print_merged()
 
     def generate_group_grid(self):
-        for cell in GridUtils.cells(self.grid):
+        for cell in self.cells():
             self.init_cell_group(len(self.groups), cell)
         for group_nr, group in self.groups.items():
             group.group_nr = group_nr
@@ -43,17 +41,17 @@ class Geode:
         cell.group_nr = group_nr
         self.groups[group_nr].add_cell(cell)
         # Recursively update
-        for cell in GridUtils.neighbours(self.grid, cell):
+        for cell in cell.neighbours(self.grid):
             self.init_cell_group(group_nr, cell)
 
     def populate_bridges(self):
         for group in self.groups.values():
             for cell in (neighbour
                          for group_cell in group.cells
-                         for neighbour in GridUtils.neighbours(self.grid, group_cell)):
+                         for neighbour in group_cell.neighbours(self.grid)):
                 if (cell.projected_block == GeodeEnum.AIR and
                         any(neighbour.group_nr not in [-1, group.group_nr]
-                            for neighbour in GridUtils.neighbours(self.grid, cell))):
+                            for neighbour in cell.neighbours(self.grid))):
                     cell.projected_block = GeodeEnum.BRIDGE
 
     def find_shortest_paths(self):
@@ -62,11 +60,9 @@ class Geode:
         # shortest path is always initialized to infinity using the defaultdict
 
         # initialize distances to self at 0 for non-obsidian
-        for block in GridUtils.cells(self.grid):
-            if block.projected_block == GeodeEnum.OBSIDIAN:
-                continue
+        for block in (cell for cell in self.cells() if cell.projected_block != GeodeEnum.OBSIDIAN):
             block.shortest_path_dict |= {block: 0}
-            for neighbour in GridUtils.neighbours(self.grid, block):
+            for neighbour in block.neighbours(self.grid):
                 if (neighbour.projected_block == GeodeEnum.OBSIDIAN
                         or neighbour.group_nr != -1):
                     block.shortest_path_dict[neighbour] = float('inf')
@@ -74,7 +70,7 @@ class Geode:
                 block.shortest_path_dict[neighbour] = 1
 
         # Floyd Warshall magic for non-obsidian
-        iterator_ = [cell for cell in GridUtils.cells(self.grid)
+        iterator_ = [cell for cell in self.cells()
                      if cell.projected_block != GeodeEnum.OBSIDIAN or cell.group_nr != -1]
         for cell_i in iterator_:
             print(cell_i.row)
@@ -84,48 +80,29 @@ class Geode:
                     if cell_i.shortest_path_dict[cell_j] > dist:
                         cell_i.shortest_path_dict[cell_j] = dist
                         cell_j.shortest_path_dict[cell_i] = dist
-            # if block.projected_block == GeodeEnum.OBSIDIAN:
-            #     continue
-            #
-            # if block.row == 5 and block.col == 9:
-            #     print('d')
-            #
-            # block.shortest_path_dict |= {block: 0}
-            # for neighbour in GridUtils.neighbours(self.grid, block):
-            #     if neighbour.projected_block == GeodeEnum.OBSIDIAN:
-            #         continue
-            #     for cell in list(neighbour.shortest_path_dict):
-            #         shortest_distance = min(block.shortest_path_dict[cell], neighbour.shortest_path_dict[cell] + 1)
-            #         block.shortest_path_dict[cell] = shortest_distance
-            #         cell.shortest_path_dict[block] = shortest_distance
-            #         if cell.shortest_path_dict[cell] == 0 and cell.projected_block == GeodeEnum.OBSIDIAN:
-            #             print(f"Only {cell.row}:{cell.col} can save us now")
-            #             cell = Cell()
 
     def compute_isolation(self):
-        for block in GridUtils.cells(self.grid):
+        for block in self.cells():
             if block.projected_block == GeodeEnum.OBSIDIAN:
                 block.average_block_distance = float('inf')
             else:
                 block.average_block_distance = statistics.mean((
                     distance
-                    for cell, distance in block.shortest_path_dict.items() if cell.projected_block == GeodeEnum.PUMPKIN
-                                                                              and block.shortest_path_dict[
-                                                                                  cell] != float('inf')
+                    for cell, distance in block.shortest_path_dict.items()
+                    if cell.projected_block == GeodeEnum.PUMPKIN and block.shortest_path_dict[cell] != float('inf')
                 ))
 
     def heuristic_placement(self):
         # Reset groups
-        for block in GridUtils.cells(self.grid):
+        for block in self.cells():
             block.group_nr = -1
-            block.average_block_distance  # TODO: do something sensible here when I don't have an 11 PM brain
         self.groups.clear()
 
         # For all
         while any(block.group_nr == -1
-                  for block in GridUtils.cells(self.grid)
+                  for block in self.cells()
                   if block.projected_block == GeodeEnum.PUMPKIN):
-            source_block = max((block for block in GridUtils.cells(self.grid)
+            source_block = max((block for block in self.cells()
                                 if block.projected_block == GeodeEnum.PUMPKIN and block.group_nr == -1),
                                key=lambda x: x.average_block_distance)
             q = PrioritySet()
@@ -141,12 +118,17 @@ class Geode:
                 cell.group_nr = group_nr
                 self.groups[group_nr].add_cell(cell)
 
-                for neighbour in (neighbour for neighbour in GridUtils.neighbours(self.grid, cell)
+                for neighbour in (neighbour for neighbour in cell.neighbours(self.grid)
                                   if neighbour.projected_block in [GeodeEnum.PUMPKIN, GeodeEnum.BRIDGE]
                                   and neighbour.group_nr == -1):
                     q.add(neighbour, -neighbour.average_block_distance)
             self.find_shortest_paths()
             self.compute_isolation()
+
+    def cells(self) -> Iterator[Cell]:
+        return (self.grid[row][col]
+                for row in range(len(self.grid))
+                for col in range(len(self.grid[0])))
 
     def _pretty_print_grid(self, str_func: Callable[[Cell], str]):
         for row_val in self.grid:
