@@ -7,6 +7,8 @@ from src.Utils.collections.queue_extensions import PrioritySet
 from src.cell import Cell
 from src.group import Group
 
+MAX_GROUP_SIZE = 12
+
 
 class Geode:
 
@@ -15,12 +17,9 @@ class Geode:
         self.groups: defaultdict[int, Group] = defaultdict(Group)
         self.generate_group_grid()
         self.populate_bridges()
-        self.find_shortest_paths()
-        self.compute_isolation()
-        self.pretty_print_shortest_distance(self.grid[4][9])
-        self.pretty_print_average_distance()
+        self.reset_groups()
+        self.average_isolation()
         self.heuristic_placement()
-        self.pretty_print_merged()
 
     def generate_group_grid(self):
         for cell in self.cells():
@@ -81,6 +80,48 @@ class Geode:
                         cell_i.shortest_path_dict[cell_j] = dist
                         cell_j.shortest_path_dict[cell_i] = dist
 
+    def average_isolation(self):
+        for cell in self.cells():
+            cell.average_block_distance = float('inf')
+
+        for cell in self.cells():
+            if cell.projected_block == GeodeEnum.OBSIDIAN or cell.has_group:
+                cell.average_block_distance = float('inf')
+                continue
+
+            # Breadth first search, not storing any distances but just the average distance
+            total_distance = 0.0
+            visited_cells = set()
+            visited_cell_count = 0
+
+            current_distance = 0
+            current_cells = {cell}
+
+            while len(current_cells) > 0:
+                total_distance += current_distance * len([cell for cell in current_cells
+                                                          if cell.projected_block == GeodeEnum.PUMPKIN
+                                                          and not cell.has_group])
+                visited_cell_count += len([cell for cell in current_cells
+                                           if cell.projected_block == GeodeEnum.PUMPKIN
+                                           and not cell.has_group])
+                visited_cells |= current_cells
+
+                new_cells = {cell
+                             for edge in current_cells
+                             for cell in edge.neighbours(self.grid)
+                             if cell not in visited_cells
+                             and cell.projected_block != GeodeEnum.OBSIDIAN
+                             and not cell.has_group}
+
+                current_cells = new_cells
+                current_distance += 1
+            try:
+                cell.average_block_distance = total_distance / visited_cell_count
+            except ZeroDivisionError:
+                cell.average_block_distance = float('inf')
+            if visited_cell_count <= MAX_GROUP_SIZE:  # If it only visited less than MAX range blocks, add 50 so the algorithm has to get it
+                cell.average_block_distance = 60 - visited_cell_count
+
     def compute_isolation(self):
         for block in self.cells():
             if block.projected_block == GeodeEnum.OBSIDIAN:
@@ -92,43 +133,78 @@ class Geode:
                     if cell.projected_block == GeodeEnum.PUMPKIN and block.shortest_path_dict[cell] != float('inf')
                 ))
 
-    def heuristic_placement(self):
+    def reset_groups(self):
         # Reset groups
         for block in self.cells():
             block.group_nr = -1
         self.groups.clear()
 
-        # For all
-        while any(block.group_nr == -1
+    def heuristic_placement(self):
+        self.reset_groups()
+
+        while any(not block.has_group
                   for block in self.cells()
                   if block.projected_block == GeodeEnum.PUMPKIN):
             source_block = max((block for block in self.cells()
-                                if block.projected_block == GeodeEnum.PUMPKIN and block.group_nr == -1),
+                                if block.projected_block == GeodeEnum.PUMPKIN and not block.has_group),
                                key=lambda x: x.average_block_distance)
             q = PrioritySet()
             q.add(source_block, 0)
+            visited_blocks = set()
             group_nr = len(self.groups)
-            while len(self.groups[group_nr].cells) < 12:
-                self.pretty_print_merged()
+            while len(self.groups[group_nr].cells) < MAX_GROUP_SIZE:
                 try:
-                    cell = q.get()
+                    cell: Cell = q.get()
+                    # If there's only one node left to add, don't add bridges
+                    if MAX_GROUP_SIZE - len(self.groups[group_nr].cells) == 1:
+                        while cell.projected_block == GeodeEnum.BRIDGE:
+                            visited_blocks.add(cell)
+                            cell = q.get()
+
+                    # If we encounter a bridge that can't connect to anything meaningful, we skip it
+                    if (cell.projected_block == GeodeEnum.BRIDGE
+                        and not any((True for neighbour in cell.neighbours(self.grid)
+                                     if neighbour.projected_block == GeodeEnum.PUMPKIN and not neighbour.has_group))):
+                        visited_blocks.add(cell)
+                        continue
+
                 except IndexError:
                     break
 
+                isolation_count = self.nr_of_isolated_blocks()
                 cell.group_nr = group_nr
                 self.groups[group_nr].add_cell(cell)
+                self.average_isolation()
+                # self.pretty_print_merged()
+                # self.pretty_print_average_distance()
+                visited_blocks.add(cell)
+                # If we block off more blocks than we can absorb, don't place the block
+                if self.nr_of_isolated_blocks() - isolation_count > MAX_GROUP_SIZE - len(self.groups[group_nr].cells):
+                    cell.group_nr = -1
+                    self.groups[group_nr].cells.remove(cell)
+                    continue
 
                 for neighbour in (neighbour for neighbour in cell.neighbours(self.grid)
                                   if neighbour.projected_block in [GeodeEnum.PUMPKIN, GeodeEnum.BRIDGE]
-                                  and neighbour.group_nr == -1):
-                    q.add(neighbour, -neighbour.average_block_distance)
-            self.find_shortest_paths()
-            self.compute_isolation()
+                                  and not neighbour.has_group
+                                  and neighbour not in visited_blocks):
+                    priority = -neighbour.average_block_distance if neighbour.projected_block == GeodeEnum.PUMPKIN \
+                               else -max((neighbour2.average_block_distance
+                                          for neighbour2 in neighbour.neighbours(self.grid)
+                                          if neighbour2.projected_block == GeodeEnum.PUMPKIN),
+                                         default=neighbour.average_block_distance)
+                    q.add(neighbour, (priority, neighbour))
 
     def cells(self) -> Iterator[Cell]:
         return (self.grid[row][col]
                 for row in range(len(self.grid))
                 for col in range(len(self.grid[0])))
+
+    def nr_of_isolated_blocks(self) -> int:
+        return sum(1
+                   for cell in self.cells()
+                   if cell.average_block_distance >= 50
+                   and cell.projected_block == GeodeEnum.PUMPKIN)
 
     def _pretty_print_grid(self, str_func: Callable[[Cell], str]):
         for row_val in self.grid:

@@ -35,7 +35,8 @@ class Cell:
 
     def group_str(self) -> str:
         color = colorama.Back.RESET if self.group_nr == -1 else colors[self.group_nr % len(colors)]
-        return f'{color}{self.group_nr:02}{colorama.Back.RESET}'
+        val = self.group_nr if self.projected_block == GeodeEnum.PUMPKIN else '  '
+        return f'{color}{val:02}{colorama.Back.RESET}'
 
     def merged_str(self) -> str:
         return self.group_str() if self.group_nr != -1 else self.projected_str()
@@ -55,6 +56,16 @@ class Cell:
         val = float('inf') if self.average_block_distance == float('inf') else int(self.average_block_distance)
         return f'{color}{val:03}{colorama.Back.RESET}'
 
+    @property
+    def has_group(self):
+        return self.group_nr != -1
+
     def __lt__(self, other):
-        return self
+        # If something is a pumpkin, we say it is smaller to give it priority over other types.
+        if self.projected_block == GeodeEnum.PUMPKIN:
+            return True
+        elif other.projected_block == GeodeEnum.PUMPKIN:
+            return False
+        # In other situations we don't care
+        return True
 
