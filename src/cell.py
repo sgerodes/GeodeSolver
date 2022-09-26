@@ -21,6 +21,7 @@ class Cell:
         self.projected_block = projected_block
         self.shortest_path_dict: dict[Cell, Union[int, float]] = defaultdict(lambda: float('inf'))
         self.average_block_distance: float = float('inf')
+        self.reachable_pumpkins: int = 0
 
     def neighbours(self, grid: list[list[Cell]]):
         row_len = len(grid)
