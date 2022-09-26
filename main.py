@@ -38,6 +38,7 @@ gen = geode_generator()
 while True:
     start = time.time()
     geode = next(gen)
+    geode.heuristic_placement()
     print(f'Geode took {(time.time() - start):3.2f} seconds')
     print('Group sizes:')
     print('\n'.join((f'{next(iter(group.cells)).group_nr:02}: {len(group.cells)}' for group in geode.groups.values())))

@@ -15,13 +15,9 @@ class Geode:
     def __init__(self, geode_grid: list[list[GeodeEnum]]):
         self.grid: list[list[Cell]] = geode_grid
         self.groups: defaultdict[int, Group] = defaultdict(Group)
-        self.natural_clusters = self.compute_natural_clusters()
+        self.clusters: set[frozenset[Cell]] = set()
         self.generate_group_grid()
         self.populate_bridges()
-        self.reset_groups()
-
-        # self.average_isolation()
-        # self.heuristic_placement()
 
     def generate_group_grid(self):
         for cell in self.cells():
@@ -55,36 +51,14 @@ class Geode:
                             for neighbour in cell.neighbours(self.grid))):
                     cell.projected_block = GeodeEnum.BRIDGE
 
-    def find_shortest_paths(self):
-        # Uses Floyd-Warshall
-
-        # shortest path is always initialized to infinity using the defaultdict
-
-        # initialize distances to self at 0 for non-obsidian
-        for block in (cell for cell in self.cells() if cell.projected_block != GeodeEnum.OBSIDIAN):
-            block.shortest_path_dict |= {block: 0}
-            for neighbour in block.neighbours(self.grid):
-                if (neighbour.projected_block == GeodeEnum.OBSIDIAN
-                        or neighbour.group_nr != -1):
-                    block.shortest_path_dict[neighbour] = float('inf')
-                    neighbour.shortest_path_dict[block] = float('inf')
-                block.shortest_path_dict[neighbour] = 1
-
-        # Floyd Warshall magic for non-obsidian
-        iterator_ = [cell for cell in self.cells()
-                     if cell.projected_block != GeodeEnum.OBSIDIAN or cell.group_nr != -1]
-        for cell_i in iterator_:
-            print(cell_i.row)
-            for cell_j in iterator_:
-                for cell_k in iterator_:
-                    dist = cell_i.shortest_path_dict[cell_k] + cell_k.shortest_path_dict[cell_j]
-                    if cell_i.shortest_path_dict[cell_j] > dist:
-                        cell_i.shortest_path_dict[cell_j] = dist
-                        cell_j.shortest_path_dict[cell_i] = dist
+    def reset_groups(self):
+        # Reset groups
+        for block in self.cells():
+            block.group_nr = -1
+        self.groups.clear()
 
     def average_isolation(self):
-        for cell in self.cells():
-            cell.average_block_distance = float('inf')
+        clusters: set[frozenset[Cell]] = set()
 
         for cell in self.cells():
             if cell.projected_block == GeodeEnum.OBSIDIAN or cell.has_group:
@@ -123,54 +97,100 @@ class Geode:
                 cell.average_block_distance = float('inf')
             if cell.reachable_pumpkins <= MAX_GROUP_SIZE:  # If it only visited less than MAX range blocks, add 50 so the algorithm has to get it
                 cell.average_block_distance = 60 - cell.reachable_pumpkins
+            clusters.add(frozenset({cell for cell in visited_cells if cell.projected_block != GeodeEnum.AIR}))
+        self.clusters = clusters
 
-    def compute_isolation(self):
-        for block in self.cells():
-            if block.projected_block == GeodeEnum.OBSIDIAN:
-                block.average_block_distance = float('inf')
-            else:
-                block.average_block_distance = statistics.mean((
-                    distance
-                    for cell, distance in block.shortest_path_dict.items()
-                    if cell.projected_block == GeodeEnum.PUMPKIN and block.shortest_path_dict[cell] != float('inf')
-                ))
+    def handle_cluster_splitting(self,
+                                 cell: Cell,
+                                 old_clusters: set[frozenset[Cell]],
+                                 new_clusters: set[frozenset[Cell]]) -> tuple[bool, set[Cell]]:
+        visited_blocks = set()
+        # We take the difference between the old set of clusters and the new set of clusters:
+        # original - new = the cluster that was split up
+        # new - original = the clusters it was split up into
+        unchanged_clusters = old_clusters & new_clusters
+        changed_new_clusters = new_clusters - unchanged_clusters
+        smallest_changed_new_clusters = (changed_new_clusters
+                                         - {max(changed_new_clusters, key=lambda cluster: len(cluster))})
 
-    def reset_groups(self):
-        # Reset groups
-        for block in self.cells():
-            block.group_nr = -1
-        self.groups.clear()
+        # For the neighbours of the newly added block, we check if entire clusters can be added to the
+        # current group
+        # To do this, we first make a cheap check:
+        #   if the number of blocks that can still be added to the current group is larger than or equal
+        #   to the total size of the smallest changed new clusters, then we commit to placing the block
+        #   and all blocks in these clusters
+        if (MAX_GROUP_SIZE - len(self.groups[cell.group_nr].cells) >=
+                sum((len(cluster) for cluster in smallest_changed_new_clusters))):
+            for block in (block
+                          for cluster in smallest_changed_new_clusters
+                          if sum((1 for block in cluster if block.projected_block == GeodeEnum.PUMPKIN)) > 0
+                          for block in cluster):
+                block.group_nr = cell.group_nr
+                self.groups[cell.group_nr].add_cell(block)
+            # No blocks in the cluster that are absorbed into the group have neighbours that aren't also
+            # absorbed, so we can mark all blocks as visited without having to put any of their neighbours
+            # in the queue
+            visited_blocks |= {block
+                               for cluster in smallest_changed_new_clusters
+                               for block in cluster}
+            commit_block = True
 
-    def compute_natural_clusters(self) -> list[set[Cell]]:
-        # Returns a list of the natural clusters of pumpkins that already can naturally reach each other.
-        # If every pumpkin can reach every pumpkin, then there's only one cluster
-        # If there's also a 1x1 group that can't reach any other pumpkin, then there are two, etc.
-        undiscovered_cells = set(cell for cell in self.cells() if cell.projected_block == GeodeEnum.PUMPKIN)
+        # Further possible algorithms to refine the check are listed below, but they are not the immediate priority
+        # as there are more pressing issues with the heuristic to solve.
 
-        clusters = []
+        # If that's not the case, we have to check how many blocks it takes to reach all pumpkins in the clusters.
+        # This is because there may be bridges that are not needed to reach all pumpkins
+        # If all bridges in the new clusters are reachable within the remaining group size, we also commit
+        # to placing the block.
 
-        while len(undiscovered_cells) != 0:
-            # Pick an arbitrary cell
-            source_cell = next(iter(undiscovered_cells))
-            visited_cells = set()
-            current_cells = {source_cell}
+        #
+        # If not all bridges can be reached, then the refined number of required blocks to reach all pumpkin
+        # blocks per cluster has to be considered.
+        # If the total number of required blocks is less than the group size, we decide not to place the block
+        # and instead make a group of the entire old cluster.
+        # If the total number of required blocks is more than the group size, we determine whether it's possible
+        # to add all pumpkins from a cluster to the current group such that the other cluster can form its own
+        # group if its size is less than the MAX_GROUP_SIZE.
+        # If that's not possible, and one of the clusters requires more than MAX_GROUP_SIZE blocks to reach
+        # all pumpkins, we can add some of those blocks to the current group to hopefully reduce the required
+        # number of blocks to equal or below MAX_GROUP_SIZE
+        # If none of these conditions apply, there is nothing that can be done to improve the situation
 
-            while len(current_cells) > 0:
-                visited_cells |= current_cells
+        # To check how many blocks it takes to reach all pumpkins in a cluster, we have to eliminate useless
+        # bridges.
+        # To check if a bridge is useless (i.e. all pumpkins that were reachable are still reachable after
+        # disabling the bridge), we can run BFS with one bridge disabled each time and see if all pumpkins
+        # are still reachable
+        # Before running BFS for all bridges, we can instead make some optimizations that are faster to compute.
 
-                # BFS
-                current_cells = {cell
-                                 for edge in current_cells
-                                 for cell in edge.neighbours(self.grid)
-                                 if cell not in visited_cells
-                                 and cell.projected_block != GeodeEnum.OBSIDIAN}
-            undiscovered_cells -= visited_cells
-            clusters.append({cell for cell in visited_cells if cell.projected_block == GeodeEnum.PUMPKIN})
-        self.pretty_print_projection()
-        return clusters
+        # 1. For all pumpkins with only one neighbour where the neighbour is a bridge, the bridge is mandatory
+        # 2. For all bridges with only one neighbour, the bridge is useless
+        # 3. For the newly created clusters, if only one of the neighbours of the added block is part of the
+        #    cluster, then trace a path from that neighbour until it branches or until all pumpkins are found.
+        #    All bridges on this path are mandatory.
+        #    # Optimization: For the 'forced' path, you can always explore pumpkins before bridges
+        #                    If BFS runs end up being necessary you run those starting from the first
+        #                    branching point.
+
+        # If there are still bridges for which the state is undetermined, then you first run a BFS from the
+        # final block of the mandatory path to determine the distances to all remaining pumpkins.
+        # Then, for all undetermined bridges, you mark the bridge as unnecessary, run the BFS again from the
+        # final block. If the distance to any of the pumpkins increases (possibly to infinite), the bridge
+        # is necessary.
+        # This doesn't necessarily achieve the optimal layout but can't massively mess up
+        # Over-optimization: You can make subclusters while determining the distance to the remaining
+        #                    pumpkins to decrease the BFS search space
+
+        # Finally, if no other options are left, we roll back the block
+        else:
+            self.groups[cell.group_nr].cells.remove(cell)
+            cell.group_nr = -1
+            commit_block = False
+        return commit_block, visited_blocks
 
     def heuristic_placement(self):
         self.reset_groups()
+        self.average_isolation()
 
         while any(not block.has_group
                   for block in self.cells()
@@ -193,109 +213,39 @@ class Geode:
                 except IndexError:
                     break
 
-                # If we encounter a bridge that can't connect to anything meaningful, we skip it
+                # If we encounter a bridge, ensure that it has at least one neighbour without a group
+                # Else, it is useless, so we skip it
+                # TODO: this needs to be refined
                 if (cell.projected_block == GeodeEnum.BRIDGE
-                    and not any((True for neighbour in cell.neighbours(self.grid)
-                                 if neighbour.projected_block == GeodeEnum.PUMPKIN and not neighbour.has_group))):
+                    and any((False for neighbour in cell.neighbours(self.grid)
+                             if neighbour.has_group or neighbour.projected_block))):
                     visited_blocks.add(cell)
                     continue
-
-                isolated_pumpkins_old = self.isolated_pumpkins()
-                isolation_reachable_pumpkins_old = sum((cell.reachable_pumpkins for cell in isolated_pumpkins_old))
+                commit_block = True
+                old_clusters = self.clusters
                 cell.group_nr = group_nr
                 self.groups[group_nr].add_cell(cell)
                 self.average_isolation()
-                # self.pretty_print_merged()
                 # self.pretty_print_average_distance()
+                self.pretty_print_merged()
                 visited_blocks.add(cell)
 
-                # If we block off more blocks than we can absorb, don't place the block
-                isolated_pumpkins_new = self.isolated_pumpkins()
-                isolation_reachable_pumpkins_new = sum((cell.reachable_pumpkins for cell in isolated_pumpkins_old))
-                if len(isolated_pumpkins_new) - len(isolated_pumpkins_old) > MAX_GROUP_SIZE - len(self.groups[group_nr].cells):
-                    cell.group_nr = -1
-                    self.groups[group_nr].cells.remove(cell)
-                    continue
-
-                # if isolation_reachable_pumpkins_old - isolation_reachable_pumpkins_new > 0
-                #
-                # if (sum((1 for cell in self.cells() if cell.projected_block == GeodeEnum.PUMPKIN)) < MAX_GROUP_SIZE
-                #         and ):
-                #     pass
-                # If less than 12 pumpkins are left,
-                # and these pumpkins are broken up
-                # and not all pumpkins can be consumed by the current group
-                # and all pumpkins that are left can reach each other
-                # then don't place the block
-
                 # During the computation of the isolation metric we also make a set of clusters consisting of blocks
-                # that can all reach each other without traversing bedrock and blocks with groupos
+                # that can all reach each other without traversing bedrock and blocks with groups
                 # When placing a block, if it leads to n new clusters, we know that the block breaks up
                 # an existing cluster into 1 + n clusters
+                if len(self.clusters) > len(old_clusters):
+                    commit_block = self.handle_cluster_splitting(cell, old_clusters, self.clusters)
 
-                # We take the difference between the old set of clusters and the new set of clusters:
-                # original - new = the cluster that was split up
-                # new - original = the clusters it was split up into
-                #
-                # For the neighbours of the newly added block, we check if the entire clusters can be added to the
-                # current group
-                #
-                # To do this, we first make a cheap check: if the size of the old cluster - 1 is less than or equal
-                # to the number of blocks that can still be added to the current group, we commit to placing the
-                # block.
-                # If that's not the case, we have to check how many blocks it takes to reach all blocks in the clusters.
-                # This is because there may be bridges that are not needed to reach all pumpkins
-                # If all bridges in the new clusters are reachable within the remaining group size, we also commit
-                # to placing the block.
-                #
-                # If not all bridges can be reached, then the refined number of required blocks to reach all pumpkin
-                # blocks per cluster has to be considered.
-                # If the total number of required blocks is less than the group size, we decide not to place the block
-                # and instead make a group of the entire old cluster.
-                # If the total number of required blocks is more than the group size, we determine whether it's possible
-                # to add all pumpkins from a cluster to the current group such that the other cluster can form its own
-                # group if its size is less than the MAX_GROUP_SIZE.
-                # If that's not possible, and one of the clusters requires more than MAX_GROUP_SIZE blocks to reach
-                # all pumpkins, we can add some of those blocks to the current group to hopefully reduce the required
-                # number of blocks to equal or below MAX_GROUP_SIZE
-                # If none of these conditions apply, there is nothing that can be done to improve the situation
-
-                # To check how many blocks it takes to reach all pumpkins in a cluster, we have to eliminate useless
-                # bridges.
-                # To check if a bridge is useless (i.e. all pumpkins that were reachable are still reachable after
-                # disabling the bridge), we can run BFS with one bridge disabled each time and see if all pumpkins
-                # are still reachable
-                # Before running BFS for all bridges, we can instead make some optimizations that are faster to compute.
-
-                # 1. For all pumpkins with only one neighbour where the neighbour is a bridge, the bridge is mandatory
-                # 2. For all bridges with only one neighbour, the bridge is useless
-                # 3. For the newly created clusters, if only one of the neighbours of the added block is part of the
-                #    cluster, then trace a path from that neighbour until it branches or until all pumpkins are found.
-                #    All bridges on this path are mandatory.
-                #    # Optimization: For the 'forced' path, you can always explore pumpkins before bridges
-                #                    If BFS runs end up being necessary you run those starting from the first
-                #                    branching point.
-
-                # If there are still bridges for which the state is undetermined, then you first run a BFS from the
-                # final block of the mandatory path to determine the distances to all remaining pumpkins.
-                # Then, for all undetermined bridges, you mark the bridge as unnecessary, run the BFS again from the
-                # final block. If the distance to any of the pumpkins increases (possibly to infinite), the bridge
-                # is necessary.
-                # This doesn't necessarily achieve the optimal layout but can't massively mess up
-                # Over-optimization: You can make subclusters while determining the distance to the remaining
-                #                    pumpkins to decrease the BFS search space
-
-
-                # At this point, we commit to placing the block.
-                # We recompute the priority for everything in the queue since the priority changed after
-                # adding a block and recomputing the isolation factor
-                q.recompute_all(lambda x: Cell.priority(x, self.grid))
-
-                for neighbour in (neighbour for neighbour in cell.neighbours(self.grid)
-                                  if neighbour.projected_block in [GeodeEnum.PUMPKIN, GeodeEnum.BRIDGE]
-                                  and not neighbour.has_group
-                                  and neighbour not in visited_blocks):
-                    q.add(neighbour, neighbour.priority(self.grid))
+                if commit_block:
+                    # We recompute the priority for everything in the queue since the priority changed after
+                    # adding a block and recomputing the isolation factor
+                    q.recompute_all(lambda x: Cell.priority(x, self.grid))
+                    for neighbour in (neighbour for neighbour in cell.neighbours(self.grid)
+                                      if neighbour.projected_block in [GeodeEnum.PUMPKIN, GeodeEnum.BRIDGE]
+                                      and not neighbour.has_group
+                                      and neighbour not in visited_blocks):
+                        q.add(neighbour, neighbour.priority(self.grid))
 
     def cells(self) -> Iterator[Cell]:
         return (self.grid[row][col]
