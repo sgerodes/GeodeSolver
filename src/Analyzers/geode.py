@@ -123,7 +123,7 @@ class Geode:
                 sum((len(cluster) for cluster in smallest_changed_new_clusters))):
             for block in (block
                           for cluster in smallest_changed_new_clusters
-                          if sum((1 for block in cluster if block.projected_block == GeodeEnum.PUMPKIN)) > 0
+                          if any((True for block in cluster if block.projected_block == GeodeEnum.PUMPKIN))
                           for block in cluster):
                 block.group_nr = cell.group_nr
                 self.groups[cell.group_nr].add_cell(block)
@@ -213,12 +213,11 @@ class Geode:
                 except IndexError:
                     break
 
-                # If we encounter a bridge, ensure that it has at least one neighbour without a group
-                # Else, it is useless, so we skip it
-                # TODO: this needs to be refined
+                # If a bridge doesn't have any ungrouped pumpkins or bridges as neighbours, we skip the bridge
                 if (cell.projected_block == GeodeEnum.BRIDGE
-                    and any((False for neighbour in cell.neighbours(self.grid)
-                             if neighbour.has_group or neighbour.projected_block))):
+                    and not any((not neighbour.has_group
+                                 and neighbour.projected_block in [GeodeEnum.PUMPKIN, GeodeEnum.BRIDGE]
+                                 for neighbour in cell.neighbours(self.grid)))):
                     visited_blocks.add(cell)
                     continue
                 commit_block = True
@@ -235,7 +234,8 @@ class Geode:
                 # When placing a block, if it leads to n new clusters, we know that the block breaks up
                 # an existing cluster into 1 + n clusters
                 if len(self.clusters) > len(old_clusters):
-                    commit_block = self.handle_cluster_splitting(cell, old_clusters, self.clusters)
+                    commit_block, visited_cells = self.handle_cluster_splitting(cell, old_clusters, self.clusters)
+                    visited_blocks |= visited_cells
 
                 if commit_block:
                     # We recompute the priority for everything in the queue since the priority changed after
