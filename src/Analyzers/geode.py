@@ -31,10 +31,55 @@ class Geode:
             block.group_nr = -1
         self.groups.clear()
 
-    def average_isolation(self):
-        clusters: set[frozenset[Cell]] = set()
+    def compute_clusters(self):
+        # Returns a list of the clusters of pumpkins that already can naturally reach each other.
+        # If every pumpkin can reach every pumpkin, then there's only one cluster
+        # If there's also a 1x1 group that can't reach any other pumpkin, then there are two, etc.
+        # Each cluster has at least one pumpkin
+        undiscovered_pumpkins = set(cell for cell in self.cells()
+                                    if cell.projected_block == GeodeEnum.PUMPKIN and not cell.has_group)
 
-        for cell in self.cells():
+        clusters = set()
+
+        while len(undiscovered_pumpkins) > 0:
+            # Pick an arbitrary cell - can't be done in a for loop because we decrease it during the loop
+            source_cell = next(iter(undiscovered_pumpkins))
+            visited_cells = set()
+            current_cells = {source_cell}
+
+            while len(current_cells) > 0:
+                visited_cells |= current_cells
+
+                # BFS
+                current_cells = {cell
+                                 for edge in current_cells
+                                 for cell in edge.neighbours(self.grid)
+                                 if cell not in visited_cells
+                                 and cell.projected_block in [GeodeEnum.PUMPKIN, GeodeEnum.BRIDGE]
+                                 and not cell.has_group}
+            undiscovered_pumpkins -= visited_cells
+            clusters.add(frozenset(visited_cells))
+        self.clusters = clusters
+
+    def average_isolation(self, frontier: set[Cell] = None):
+        """
+        Computes the isolation metric for the frontier, which mostly comes down to the average distance to all other
+        reachable pumpkins
+        :param frontier: The cells to compute the metric for. Defaults to all cells
+        """
+        # The caller does not expect frontier to change, so we use cells to potentially modify the frontier
+        cells = set()
+        if frontier is not None:
+            extended_frontier = {neighbour
+                                 for cell in frontier
+                                 if cell.projected_block == GeodeEnum.BRIDGE
+                                 for neighbour in cell.neighbours(self.grid)
+                                 if neighbour.projected_block in [GeodeEnum.PUMPKIN] and not neighbour.has_group}
+            cells = frontier | extended_frontier
+        else:
+            cells = set(self.cells())
+
+        for cell in cells:
             if cell.projected_block in [GeodeEnum.OBSIDIAN, GeodeEnum.AIR] or cell.has_group:
                 cell.average_block_distance = float('inf')
                 continue
@@ -72,8 +117,6 @@ class Geode:
             # If it only visited less than MAX range blocks, increase the score so the algorithm has to get it
             if cell.reachable_pumpkins <= MAX_GROUP_SIZE:
                 cell.average_block_distance = 60 - cell.reachable_pumpkins
-            clusters.add(frozenset({cell for cell in visited_cells if cell.projected_block != GeodeEnum.AIR}))
-        self.clusters = clusters
 
     def handle_cluster_splitting(self,
                                  cell: Cell,
@@ -86,8 +129,16 @@ class Geode:
         # new - original = the clusters it was split up into
         unchanged_clusters = old_clusters & new_clusters
         changed_new_clusters = new_clusters - unchanged_clusters
-        smallest_changed_new_clusters = (changed_new_clusters
-                                         - {max(changed_new_clusters, key=lambda cluster: len(cluster))})
+
+        # There should be no scenario in which this method is called and there are not at least two clusters
+        largest_new_cluster = max(changed_new_clusters, key=lambda cluster: len(cluster))
+        second_largest_new_cluster = max(changed_new_clusters - {largest_new_cluster}, key=lambda cluster: len(cluster))
+        if len(largest_new_cluster) == len(second_largest_new_cluster):
+            # If the largest clusters are equally large, we don't exclude the largest cluster anymore.
+            # For the block to end up being placed, it will have to absorb all clusters
+            smallest_changed_new_clusters = changed_new_clusters
+        else:
+            smallest_changed_new_clusters = changed_new_clusters - {largest_new_cluster}
 
         # For the neighbours of the newly added block, we check if entire clusters can be added to the
         # current group
@@ -180,6 +231,7 @@ class Geode:
         while len(group) < MAX_GROUP_SIZE:
             commit_block = True
             q = PrioritySet()
+
             if absorb_cluster_mode_enabled:
                 # If absorb_cluster_mode_enabled is active, the blocks in the queue are not guaranteed to be neighbours
                 # of the current group, so we should only add blocks to the queue that are both in the frontier and in
@@ -187,8 +239,9 @@ class Geode:
                 for cell in frontier & absorption_target_set:
                     q.add(cell, cell.priority(self.grid))
             else:
-                # absorb_cluster_mode_enabled is inactive, the blocks are always guaranteed to be neighbours and can be
-                # added to the queue
+                # absorb_cluster_mode_enabled is inactive, we need to recompute the isolation metric for the
+                # frontier, then add the blocks to the queue
+                self.average_isolation(frontier)
                 for cell in frontier:
                     q.add(cell, cell.priority(self.grid))
 
@@ -212,12 +265,7 @@ class Geode:
                 frontier.remove(cell)
                 continue
 
-            old_clusters = self.clusters
             group.add_cell(cell)
-            if not absorb_cluster_mode_enabled:  # This expensive calculation doesn't have to be done when absorbing
-                self.average_isolation()
-            # self.pretty_print_average_distance()
-            # self.pretty_print_merged()
             visited_blocks.add(cell)
             frontier.remove(cell)
 
@@ -226,8 +274,16 @@ class Geode:
             # When placing a block, if it leads to n new clusters, we know that the block breaks up
             # an existing cluster into 1 + n clusters
             # Splitting up clusters like this is only possible when not absorbing clusters
-            if not absorb_cluster_mode_enabled and len(self.clusters) > len(old_clusters):
-                commit_block = self.handle_cluster_splitting(cell, group, old_clusters, self.clusters, visited_blocks)
+            if not absorb_cluster_mode_enabled:
+                # Store the old clusters before we recompute them
+                old_clusters = self.clusters
+                self.compute_clusters()
+                if len(self.clusters) > len(old_clusters):
+                    commit_block = self.handle_cluster_splitting(cell, group, old_clusters,
+                                                                 self.clusters, visited_blocks)
+                    # Regardless of whether the block was committed and more blocks were added, or if the block
+                    # is rolled back, we need to recompute the cluster so the next run has accurate clusters
+                    self.compute_clusters()
 
             if commit_block:
                 # We add new neighbours to the frontier
@@ -238,14 +294,18 @@ class Geode:
 
     def heuristic_placement(self):
         self.reset_groups()
-        self.average_isolation()
 
         while any(not block.has_group
                   for block in self.cells()
                   if block.projected_block == GeodeEnum.PUMPKIN):
-            source_block = max((block for block in self.cells()
+            # Before populating a new group, we should always update the isolation score for all blocks
+            # and compute clusters
+            self.average_isolation()
+            self.compute_clusters()
+
+            source_block = min((block for block in self.cells()
                                 if block.projected_block == GeodeEnum.PUMPKIN and not block.has_group),
-                               key=lambda x: x.average_block_distance)
+                               key=lambda x: x.priority(self.grid))
             frontier = {source_block}
             visited_blocks = set()
             # Instantiate the group (looks weird because of default dicts)

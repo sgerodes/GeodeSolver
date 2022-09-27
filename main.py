@@ -36,7 +36,7 @@ input_grid = '''00000000000000000
 
 gen = geode_generator()
 for i, geode in enumerate(gen):
-    start = time.time()
+    start = time.time()  # Doesn't include geode instantiation but that should be negligible
     geode.heuristic_placement()
     print(f'Geode {i} took {(time.time() - start):3.2f} seconds')
     print('Group sizes:')
