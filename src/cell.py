@@ -22,14 +22,17 @@ class Cell:
         self.shortest_path_dict: dict[Cell, Union[int, float]] = defaultdict(lambda: float('inf'))
         self.average_block_distance: float = float('inf')
         self.reachable_pumpkins: int = 0
+        self._neighbours: list[Cell] = None
 
     def neighbours(self, grid: list[list[Cell]]):
-        row_len = len(grid)
-        col_len = len(grid[0])
+        if not self._neighbours:
+            row_len = len(grid)
+            col_len = len(grid[0])
 
-        return [grid[self.row + row_][self.col + col_]
-                for row_, col_ in [(-1, 0), (0, -1), (1, 0), (0, 1)]
-                if 0 <= self.row + row_ < row_len and 0 <= self.col + col_ < col_len]
+            self._neighbours = [grid[self.row + row_][self.col + col_]
+                    for row_, col_ in [(-1, 0), (0, -1), (1, 0), (0, 1)]
+                    if 0 <= self.row + row_ < row_len and 0 <= self.col + col_ < col_len]
+        return self._neighbours
 
     def projected_str(self) -> str:
         return self.projected_block.pretty_print

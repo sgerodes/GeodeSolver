@@ -1,4 +1,4 @@
-from typing import Callable, Iterator
+from typing import Callable, Iterator, Tuple
 
 from src.Enums.geode_enum import GeodeEnum
 from src.Utils.collections.queue_extensions import PrioritySet
@@ -15,6 +15,9 @@ class Geode:
         self.groups: dict[int, Group] = {}
         self.clusters: set[frozenset[Cell]] = set()
         self.populate_bridges()
+        self._cells = tuple(self.grid[row][col]
+                for row in range(len(self.grid))
+                for col in range(len(self.grid[0])))
 
     def populate_bridges(self):
         # Replace air blocks that connect to at least two pumpkins with a bridge
@@ -315,10 +318,8 @@ class Geode:
 
             self.populate_group(group, frontier, visited_blocks)
 
-    def cells(self) -> Iterator[Cell]:
-        return (self.grid[row][col]
-                for row in range(len(self.grid))
-                for col in range(len(self.grid[0])))
+    def cells(self) -> Tuple[Cell]:
+        return self._cells
 
     def isolated_pumpkins(self) -> list[Cell]:
         return [cell
