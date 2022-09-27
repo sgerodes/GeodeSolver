@@ -1,11 +1,11 @@
-from typing import IO
+from typing import IO, Iterator
 
 from src.Analyzers.geode import Geode
 from src.Enums.geode_enum import GeodeEnum
 from src.cell import Cell
 
 
-def geode_generator() -> list[list[GeodeEnum]]:
+def geode_generator() -> Iterator[Geode]:
     geode = []
     row = 0
     with open('geodes.txt', 'r') as geode_file:

@@ -70,7 +70,8 @@ class Cell:
         # Otherwise, return the maximum isolation score of all the neighbours
         return -max((neighbour.average_block_distance
                      for neighbour in self.neighbours(grid)
-                     if neighbour.projected_block == GeodeEnum.PUMPKIN),
+                     if neighbour.projected_block == GeodeEnum.PUMPKIN
+                     and not neighbour.has_group),
                     default=self.average_block_distance), self
 
     def __lt__(self, other):

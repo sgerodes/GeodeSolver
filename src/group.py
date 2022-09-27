@@ -9,3 +9,11 @@ class Group:
 
     def add_cell(self, cell: Cell):
         self.cells.add(cell)
+        cell.group_nr = self.group_nr
+
+    def remove_cell(self, cell: Cell):
+        self.cells.remove(cell)
+        cell.group_nr = -1
+
+    def __len__(self):
+        return len(self.cells)
